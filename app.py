@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
+import requests
+from io import BytesIO
 from pdf_processor import extract_pdf_data
 from receipt_parser import parse_receipt_data
 
@@ -10,40 +11,64 @@ CORS(app)  # Enable CORS for chatbot platform
 @app.route('/process-receipt', methods=['POST'])
 def process_receipt():
     """
-    Process uploaded PDF receipt and extract transaction data
+    Process PDF receipt - accepts either file upload OR file URL
     
-    Expected: multipart/form-data with 'file' field containing PDF
+    Expected:
+    - multipart/form-data with 'file' field (file upload), OR
+    - form data with 'file_url' field (URL to PDF file)
+    
     Returns: JSON with extracted receipt information
     """
     try:
-        # Check if PDF file is present
-        if 'file' not in request.files:
+        file_obj = None
+        
+        # Option 1: Check if file URL is provided (for chatbot platforms that send URLs)
+        file_url = request.form.get('file_url') or (request.json.get('file_url') if request.is_json else None)
+        
+        if file_url:
+            print(f"📥 Downloading PDF from URL: {file_url}")
+            
+            # Download the file from URL
+            response = requests.get(file_url, timeout=30)
+            if response.status_code != 200:
+                return jsonify({
+                    'success': False,
+                    'error': f'Failed to download file from URL (status {response.status_code})'
+                }), 400
+            
+            # Create file-like object from downloaded content
+            file_obj = BytesIO(response.content)
+            print(f"✅ Downloaded {len(response.content)} bytes")
+        
+        # Option 2: Check if file is directly uploaded
+        elif 'file' in request.files:
+            file_obj = request.files['file']
+            
+            # Check if file was actually selected
+            if file_obj.filename == '':
+                return jsonify({
+                    'success': False,
+                    'error': 'No file selected'
+                }), 400
+            
+            # Validate file type
+            if not file_obj.filename.lower().endswith('.pdf'):
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid file type: {file_obj.filename}. Please send PDF only.'
+                }), 400
+            
+            print(f"📄 Processing uploaded file: {file_obj.filename}")
+        
+        else:
             return jsonify({
                 'success': False,
-                'error': 'No file provided. Please upload a PDF receipt.'
+                'error': 'No file provided. Send either "file" (file upload) or "file_url" (URL to PDF)'
             }), 400
-        
-        file = request.files['file']
-        
-        # Check if file was actually selected
-        if file.filename == '':
-            return jsonify({
-                'success': False,
-                'error': 'No file selected'
-            }), 400
-        
-        # Validate file type
-        if not file.filename.lower().endswith('.pdf'):
-            return jsonify({
-                'success': False,
-                'error': f'Invalid file type: {file.filename}. Please send PDF only.'
-            }), 400
-        
-        print(f"Processing file: {file.filename}")
         
         # Extract text from PDF
-        extracted_text = extract_pdf_data(file)
-        print(f"Extracted text length: {len(extracted_text)} characters")
+        extracted_text = extract_pdf_data(file_obj)
+        print(f"✅ Extracted text length: {len(extracted_text)} characters")
         
         # Parse receipt information
         receipt_data = parse_receipt_data(extracted_text)
@@ -56,7 +81,7 @@ def process_receipt():
         }), 200
         
     except Exception as e:
-        print(f"Error processing receipt: {str(e)}")
+        print(f"❌ Error processing receipt: {str(e)}")
         return jsonify({
             'success': False,
             'error': f'Failed to process receipt: {str(e)}'
@@ -80,13 +105,15 @@ def index():
         'endpoints': {
             '/': 'This documentation',
             '/health': 'Health check endpoint',
-            '/process-receipt': 'POST - Process PDF receipt (multipart/form-data with file field)'
+            '/process-receipt': 'POST - Process PDF receipt'
         },
         'usage': {
             'method': 'POST',
             'url': '/process-receipt',
-            'content-type': 'multipart/form-data',
-            'body': 'file: <PDF file>'
+            'options': [
+                {'content-type': 'multipart/form-data', 'body': 'file: <PDF file>'},
+                {'content-type': 'application/x-www-form-urlencoded', 'body': 'file_url: <URL to PDF>'}
+            ]
         }
     }), 200
 
@@ -95,6 +122,6 @@ if __name__ == '__main__':
     print("📍 API running at: http://localhost:5000")
     print("📚 Documentation: http://localhost:5000")
     print("💚 Health check: http://localhost:5000/health")
-    print("\n⚡ Ready to process receipts!\n")
+    print("\n⚡ Ready to process receipts (file upload OR file URL)!\n")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
